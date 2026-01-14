@@ -1,0 +1,103 @@
+module iter_mul32 (
+  input  wire        clk,
+  input  wire        rst_n,
+
+  input  wire        start,     
+  input  wire [4:0]  op_sel,    // 10000->10011
+
+  input  wire [31:0] rs1,
+  input  wire [31:0] rs2,
+
+  output wire        busy,
+  output wire        done,
+  output reg  [31:0] result
+);
+  // Opcodes
+  localparam OP_MUL    = 5'b10000;
+  localparam OP_MULH   = 5'b10001;
+  localparam OP_MULHSU = 5'b10010;
+  localparam OP_MULHU  = 5'b10011;
+
+  // FSM
+  localparam S_IDLE = 2'd0, S_RUN = 2'd1, S_FIX = 2'd2, S_DONE = 2'd3;
+  reg [1:0] state, state_n;
+
+  assign busy = (state == S_RUN) | (state == S_FIX);
+  assign done = (state == S_DONE);
+
+  // Mode flags
+  reg want_high, signed_a, signed_b, need_neg;
+
+  // Registers (theo sơ đồ)
+  reg  [63:0] mcand;     // A 64-bit (dịch trái)
+  reg  [31:0] mplier;    // B 32-bit (dịch phải)
+  reg  [63:0] acc;       // tích 64-bit
+  reg  [5:0]  cnt;       // 0..32
+
+  wire do_add        = mplier[0];
+  wire [63:0] addres = acc + mcand;
+
+  // Abs
+  wire rs1_neg = rs1[31], rs2_neg = rs2[31];
+  wire [31:0] a_abs = (signed_a && rs1_neg) ? (~rs1 + 32'd1) : rs1;
+  wire [31:0] b_abs = (signed_b && rs2_neg) ? (~rs2 + 32'd1) : rs2;
+
+  // Next-state
+  always @* begin
+    state_n = state;
+    case (state)
+      S_IDLE: if (start)           state_n = S_RUN;
+      S_RUN : if (cnt == 6'd31)    state_n = S_FIX;
+      S_FIX :                      state_n = S_DONE;
+      S_DONE:                      state_n = S_IDLE;
+      default:                     state_n = S_IDLE;
+    endcase
+  end
+
+  // Datapath + control
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      state     <= S_IDLE;
+      want_high <= 1'b0; signed_a <= 1'b0; signed_b <= 1'b0; need_neg <= 1'b0;
+      mcand     <= 64'd0; mplier <= 32'd0; acc <= 64'd0; cnt <= 6'd0;
+      result    <= 32'd0;
+    end else begin
+      state <= state_n;
+
+      case (state)
+        S_IDLE: if (start) begin
+          // Decode mode
+          want_high <= (op_sel != OP_MUL);
+          signed_a  <= (op_sel == OP_MULH) | (op_sel == OP_MULHSU);
+          signed_b  <= (op_sel == OP_MULH);
+          need_neg  <= (op_sel == OP_MULH)   ? (rs1_neg ^ rs2_neg) :
+                       (op_sel == OP_MULHSU) ?  rs1_neg : 1'b0;
+
+          // Load registers
+          mcand <= {32'd0, a_abs};
+          mplier<= b_abs;
+          acc   <= 64'd0;
+          cnt   <= 6'd0;
+        end
+
+        S_RUN: begin
+          if (cnt < 6'd32) begin
+            if (do_add) acc <= addres;
+              mcand <= mcand << 1;
+              mplier<= mplier >> 1;
+              cnt   <= cnt + 6'd1;
+            end
+          end
+        end
+
+        S_FIX: begin
+          if (want_high && need_neg) acc <= (~acc) + 64'd1; // áp dấu cho high32
+        end
+
+        S_DONE: begin
+          result <= want_high ? acc[63:32] : acc[31:0];
+        end
+      endcase
+    end
+  end
+endmodule

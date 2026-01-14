@@ -1,0 +1,66 @@
+`timescale 1ns/1ps
+
+module Division2_tb;
+
+    reg  [31:0] a_operand, b_operand;
+    wire [31:0] result;
+    wire Exception;
+
+    // Instantiate DUT
+    Division2 dut (
+        .a_operand(a_operand),
+        .b_operand(b_operand),
+        .Exception(Exception),
+        .result(result)
+    );
+
+    // Helper variables để print giá trị thực
+    real fa, fb, fr;
+    task show;
+        begin
+            fa = $bitstoshortreal(a_operand);
+            fb = $bitstoshortreal(b_operand);
+            fr = $bitstoshortreal(result);
+            $display("[T=%0dns] A=%h (%.5f) / B=%h (%.5f) => R=%h (%.5f) | EXC=%b",
+                      $time, a_operand, fa, b_operand, fb, result, fr, Exception);
+        end
+    endtask
+
+    initial begin
+        $display("\n==== FLOATING DIVISION2 TESTBENCH START ====\n");
+
+        // Test 1: 10.0 / 2.0 = 5.0
+        a_operand = 32'h41200000;  // 10.0
+        b_operand = 32'h40000000;  // 2.0
+        #200; show();
+
+        // Test 2: 7.5 / 3.0 = 2.5
+        a_operand = 32'h40F00000;  // 7.5
+        b_operand = 32'h40400000;  // 3.0
+        #200; show();
+
+        // Test 3: 1.0 / 0.0 => Infinity or Exception
+        a_operand = 32'h3F800000;  // 1.0
+        b_operand = 32'h00000000;  // 0.0
+        #200; show();
+
+        // Test 4: -8.0 / 2.0 = -4.0
+        a_operand = 32'hC1000000;  // -8.0
+        b_operand = 32'h40000000;  // 2.0
+        #200; show();
+
+        // Test 5: NaN / 3.0 => Exception expected
+        a_operand = 32'h7FC00001;  // NaN
+        b_operand = 32'h40400000;  // 3.0
+        #200; show();
+
+        // Test 6: Small / Large => Underflow behavior check
+        a_operand = 32'h00800000;  // Very small denormal
+        b_operand = 32'h7F7FFFFF;  // Max float
+        #200; show();
+
+        $display("\n==== TEST END ====\n");
+        $finish;
+    end
+
+endmodule

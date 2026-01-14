@@ -1,0 +1,24 @@
+module ConverttoInt(
+    input  [31:0] float_in,
+    output reg [31:0] int_out
+);
+    wire sign = float_in[31];
+    wire [7:0] exponent = float_in[30:23];
+    wire [22:0] fraction = float_in[22:0];
+    reg [31:0] value;
+    integer E;
+
+    always @(*) begin
+        if (exponent < 127) begin
+            int_out = 32'd0;
+        end else if (exponent > 158) begin // > 2^31
+            int_out = sign ? 32'h80000000 : 32'h7FFFFFFF;
+        end else begin
+            E = exponent - 127;
+            value = {1'b1, fraction} << 8;
+            if (E >= 23) value = value << (E - 23);
+            else value = value >> (23 - E);
+            int_out = sign ? -value : value;
+        end
+    end
+endmodule
