@@ -1,0 +1,59 @@
+`timescale 1ns/1ps
+
+module TB_Sqrt;
+
+    reg  [31:0] a;
+    wire [31:0] result;
+    wire Exception;
+
+    // Instantiate the DUT (Device Under Test)
+    Sqrt DUT (
+        .operand_a(a),
+        .result(result),
+        .Exception(Exception)
+    );
+
+    // Task để in số float cho dễ debug
+    task print_float;
+        input [31:0] f;
+        begin
+            $display("  Sign=%b, Exp=%d, Mant=0x%h", f[31], f[30:23], f[22:0]);
+        end
+    endtask
+
+    initial begin
+        $display("===== TEST SQRT IEEE-754 =====");
+
+        // 4.0 -> 2.0
+        a = 32'h40800000; #50;
+        $display("[4.0]     → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // 2.25 -> 1.5
+        a = 32'h40100000; #50;
+        $display("[2.25]    → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // 16.0 -> 4.0
+        a = 32'h41800000; #50;
+        $display("[16.0]    → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // 7.0 -> ~2.645751
+        a = 32'h40E00000; #50;
+        $display("[7.0]     → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // 10.5 -> ~3.24037
+        a = 32'h41280000; #50;
+        $display("[10.5]    → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // 0.0 -> 0.0
+        a = 32'h00000000; #50;
+        $display("[0.0]     → result = %h | Exception=%b", result, Exception); print_float(result);
+
+        // Negative -> NaN expected
+        a = 32'hC1200000; #50; // -10.0
+        $display("[-10.0]   → result = %h | Exception=%b (Expect NaN)", result, Exception); print_float(result);
+
+        $display("===== DONE =====");
+        #50 $finish;
+    end
+
+endmodule

@@ -1,0 +1,26 @@
+module ConvfromSignInt(
+    input  [31:0] int_in,
+    output reg [31:0] float_out
+);
+    reg sign;
+    reg [31:0] abs_val;
+    reg [7:0] exponent;
+    reg [22:0] mantissa;
+    integer shift;
+
+    always @(*) begin
+        if (int_in == 32'd0) begin
+            float_out = 32'd0;
+        end else begin
+            sign = int_in[31];
+            abs_val = sign ? -int_in : int_in;
+
+            shift = 31 - $clog2(abs_val);
+            abs_val = abs_val << shift;
+            exponent = 127 + (31 - shift);
+            mantissa = abs_val[31:8]; // lấy 23 bit cao
+
+            float_out = {sign, exponent, mantissa};
+        end
+    end
+endmodule

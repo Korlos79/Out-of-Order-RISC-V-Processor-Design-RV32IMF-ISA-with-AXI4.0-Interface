@@ -1,0 +1,178 @@
+`timescale 1ns / 1ps
+
+module tb_rv32m_muldiv_split;
+
+    // --- 1. Khai báo tín hiệu ---
+    reg clk;
+    reg rst_n;
+    
+    reg op_valid;
+    reg [4:0] op_sel;
+    reg [31:0] rs1;
+    reg [31:0] rs2;
+
+    wire busy;
+    wire done;
+    wire [31:0] result;
+
+    // --- 2. Định nghĩa Opcode (Để dễ đọc code) ---
+    localparam OP_MUL    = 5'b10000;
+    localparam OP_MULH   = 5'b10001;
+    localparam OP_DIV    = 5'b10100;
+    localparam OP_REM    = 5'b10110;
+
+    // --- 3. Instantiate DUT (Device Under Test) ---
+    // Lưu ý: Đảm bảo bạn đã có file iter_mul32.v (bản pipeline) 
+    // và iter_div32.v (bản FSM) trong project
+    rv32m_muldiv_split uut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .op_valid(op_valid),
+        .op_sel(op_sel),
+        .rs1(rs1),
+        .rs2(rs2),
+        .busy(busy),
+        .done(done),
+        .result(result)
+    );
+
+    // --- 4. Tạo Clock (100MHz) ---
+    always #5 clk = ~clk;
+
+    // --- 5. Biến hỗ trợ debug ---
+    integer start_time;
+    
+    // Task gửi lệnh (Pulse 1 chu kì)
+    task send_op;
+        input [4:0] opcode;
+        input [31:0] in1;
+        input [31:0] in2;
+        begin
+            @(posedge clk);
+            op_valid <= 1;
+            op_sel   <= opcode;
+            rs1      <= in1;
+            rs2      <= in2;
+            start_time = $time;
+            
+            @(posedge clk);
+            op_valid <= 0; // Tắt valid sau 1 chu kì
+        end
+    endtask
+
+    // --- 6. Kịch bản Test ---
+    initial begin
+        // Khởi tạo
+        clk = 0; rst_n = 0;
+        op_valid = 0; op_sel = 0; rs1 = 0; rs2 = 0;
+
+        $display("=== BAT DAU TESTBENCH MULDIV SPLIT ===");
+        
+        // Reset hệ thống
+        #20 rst_n = 1;
+        #20;
+
+        // ====================================================
+        // TEST CASE 1: Phép Nhân (Pipeline)
+        // ====================================================
+        $display("\n[T=%0t] TEST 1: MUL (10 * 5)", $time);
+        send_op(OP_MUL, 32'd10, 32'd5);
+        
+        // Chờ kết quả (MUL pipeline mất 4 chu kì)
+        wait(done);
+        @(posedge clk);
+        if (result === 32'd50) 
+            $display("[PASS] MUL Result = %d (Latency: %0d ns)", result, $time - start_time);
+        else 
+            $display("[FAIL] MUL Result = %d (Expected 50)", result);
+
+        #20;
+
+        // ====================================================
+        // TEST CASE 2: Pipeline Stress (Nhân liên tục)
+        // ====================================================
+        $display("\n[T=%0t] TEST 2: MUL Pipeline Stress (3 ops)", $time);
+        
+        // Gửi 3 lệnh liên tiếp
+        send_op(OP_MUL, 32'd2, 32'd3); // 2*3 = 6
+        send_op(OP_MUL, 32'd4, 32'd5); // 4*5 = 20
+        send_op(OP_MUL, 32'd10, 32'd10); // 10*10 = 100
+
+        // Monitor kết quả trả về
+        repeat(3) begin
+            @(posedge done); // Đợi mỗi lần done bật lên
+            $display("[OUTPUT] Time %0t: Result = %d", $time, result);
+        end
+
+        #50;
+
+        // ====================================================
+        // TEST CASE 3: Phép Chia (Blocking)
+        // ====================================================
+        $display("\n[T=%0t] TEST 3: DIV (100 / 4)", $time);
+        send_op(OP_DIV, 32'd100, 32'd4);
+        
+        // Kiểm tra tín hiệu BUSY ngay sau khi gửi lệnh
+        #1; 
+        if (busy === 1) $display("[INFO] DIV Started, BUSY is HIGH (Correct)");
+        else            $display("[FAIL] DIV Started but BUSY is LOW!");
+
+        // Chờ kết quả (DIV FSM mất ~34 chu kì)
+        wait(done);
+        @(posedge clk);
+        if (result === 32'd25) 
+            $display("[PASS] DIV Result = %d (Latency: %0d ns)", result, $time - start_time);
+        else 
+            $display("[FAIL] DIV Result = %d (Expected 25)", result);
+
+        #20;
+
+        // ====================================================
+        // TEST CASE 4: Interlock Logic (Gửi MUL khi DIV đang bận)
+        // ====================================================
+        $display("\n[T=%0t] TEST 4: Hazard Check (Try MUL while DIV busy)", $time);
+        
+        // 1. Bắt đầu một phép chia dài (100 / 2)
+        send_op(OP_DIV, 32'd100, 32'd2);
+        
+        // 2. Ngay lập tức thử gửi lệnh MUL (10 * 10) khi DIV đang chạy
+        #20; // Đợi vài chu kì cho DIV vào guồng quay
+        $display("[INFO] Sending MUL while Busy=%b...", busy);
+        
+        // Cố tình gửi lệnh MUL
+        @(posedge clk);
+        op_valid <= 1;
+        op_sel   <= OP_MUL;
+        rs1      <= 32'd10;
+        rs2      <= 32'd10;
+        @(posedge clk);
+        op_valid <= 0;
+
+        // 3. Quan sát: Lệnh MUL này có được thực thi không?
+        // Nếu logic `mul_start = ... & ~div_busy` hoạt động đúng,
+        // thì lệnh MUL này sẽ bị lờ đi, và ta sẽ KHÔNG thấy kết quả 100 xuất hiện sau 4 chu kì.
+        
+        // Đợi xem có kết quả nào là 100 không
+        fork
+            begin
+                // Luồng 1: Đợi DIV xong (50)
+                wait(done && result == 32'd50);
+                $display("[PASS] DIV finished correctly (Res=50).");
+            end
+            begin
+                // Luồng 2: Kiểm tra xem có MUL lọt ra không
+                // Đợi 1 thời gian ngắn (khoảng 10 chu kì)
+                #100;
+                if (result === 32'd100 && done) 
+                    $display("[FAIL] MUL executed while DIV was busy!");
+                else
+                    $display("[PASS] MUL was blocked successfully.");
+            end
+        join_any
+
+        #100;
+        $display("\n=== END OF SIMULATION ===");
+        $finish;
+    end
+
+endmodule

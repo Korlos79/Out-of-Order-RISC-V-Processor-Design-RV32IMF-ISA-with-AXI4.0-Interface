@@ -1,0 +1,153 @@
+module reservation_station #(
+    parameter DATA_WIDTH = 32,
+    parameter TAG_WIDTH  = 3,   // Độ rộng Tag (ví dụ 3 bit cho 8 FUs)
+    parameter NUM_ENTRIES = 4   // Số lượng khe chờ trong trạm này
+)(
+    input wire clk,
+    input wire rst_n,
+
+    // --- 1. GIAO DIỆN VỚI DISPATCHER (Nhận lệnh) ---
+    input  wire                   dispatch_enable, // Tín hiệu báo có lệnh mới cần đưa vào RS
+    input  wire [DATA_WIDTH-1:0]  src1_val,        // Giá trị RS1 (nếu có)
+    input  wire [TAG_WIDTH-1:0]   src1_tag,        // Tag RS1 (nếu chưa có)
+    input  wire                   src1_ready,      // 1: Dữ liệu RS1 đã có, 0: Phải chờ Tag
+    
+    input  wire [DATA_WIDTH-1:0]  src2_val,        // Tương tự cho RS2
+    input  wire [TAG_WIDTH-1:0]   src2_tag,
+    input  wire                   src2_ready,
+    
+    input  wire [4:0]             dest_reg,        // Thanh ghi đích (Rd) để trả kết quả sau này
+    input  wire [4:0]             opcode,          // Mã lệnh (ALU Opcode)
+    input  wire [TAG_WIDTH-1:0]   my_rob_tag,      // Tag định danh cho chính lệnh này (từ ROB/Dispatcher cấp)
+
+    output wire                   rs_full,         // Báo đầy: "Hết chỗ rồi, đừng gửi nữa"
+
+    // --- 2. GIAO DIỆN VỚI CDB (Lắng nghe kết quả) ---
+    input  wire                   cdb_valid,       // Có kết quả mới trên Bus
+    input  wire [TAG_WIDTH-1:0]   cdb_tag,         // Tag của kết quả đó
+    input  wire [DATA_WIDTH-1:0]  cdb_value,       // Giá trị kết quả
+
+    // --- 3. GIAO DIỆN VỚI FU (Đẩy lệnh đi tính) ---
+    input  wire                   fu_ready,        // FU có rảnh để nhận lệnh không?
+    output reg                    fu_start,        // Kích hoạt FU
+    output reg [DATA_WIDTH-1:0]   fu_op1,
+    output reg [DATA_WIDTH-1:0]   fu_op2,
+    output reg [4:0]              fu_opcode,
+    output reg [TAG_WIDTH-1:0]    fu_dest_tag,     // Tag đích để FU trả về CDB sau khi tính xong
+    output reg [4:0]              fu_dest_reg      // Địa chỉ Rd (để cập nhật Scoreboard/ROB)
+);
+
+    // --- CẤU TRÚC LƯU TRỮ CỦA RS ---
+    reg [NUM_ENTRIES-1:0] busy;           // Khe này có đang chứa lệnh không?
+    reg [4:0]             op [NUM_ENTRIES-1:0]; // Opcode
+    
+    reg [DATA_WIDTH-1:0]  v1 [NUM_ENTRIES-1:0]; // Giá trị toán hạng 1
+    reg [TAG_WIDTH-1:0]   q1 [NUM_ENTRIES-1:0]; // Tag toán hạng 1 (chờ ai?)
+    reg [NUM_ENTRIES-1:0] r1;                   // Toán hạng 1 đã sẵn sàng chưa?
+
+    reg [DATA_WIDTH-1:0]  v2 [NUM_ENTRIES-1:0]; // Giá trị toán hạng 2
+    reg [TAG_WIDTH-1:0]   q2 [NUM_ENTRIES-1:0]; // Tag toán hạng 2
+    reg [NUM_ENTRIES-1:0] r2;                   // Toán hạng 2 đã sẵn sàng chưa?
+
+    reg [4:0]             dest [NUM_ENTRIES-1:0]; // Rd
+    reg [TAG_WIDTH-1:0]   rob_tag [NUM_ENTRIES-1:0]; // Tag của lệnh này
+
+    // --- LOGIC TÌM CHỖ TRỐNG (ALLOCATION) ---
+    // Tìm index đầu tiên mà busy = 0
+    integer i;
+    reg [31:0] alloc_idx; // Index tìm được
+    reg        found_slot;
+
+    always @(*) begin
+        found_slot = 0;
+        alloc_idx  = 0;
+        for (i = 0; i < NUM_ENTRIES; i = i + 1) begin
+            if (!busy[i] && !found_slot) begin
+                alloc_idx  = i;
+                found_slot = 1;
+            end
+        end
+    end
+    
+    assign rs_full = !found_slot; // Nếu không tìm thấy chỗ trống -> Full
+
+    // --- LOGIC CHỌN LỆNH ĐỂ CHẠY (ISSUE TO FU) ---
+    // Tìm lệnh nào đã đủ dữ liệu (r1=1 và r2=1) để đẩy vào FU
+    reg [31:0] issue_idx;
+    reg        can_fire;
+
+    always @(*) begin
+        can_fire  = 0;
+        issue_idx = 0;
+        // Ưu tiên lệnh cũ nhất (đơn giản hóa: quét từ 0 lên)
+        for (i = 0; i < NUM_ENTRIES; i = i + 1) begin
+            if (busy[i] && r1[i] && r2[i] && !can_fire) begin
+                issue_idx = i;
+                can_fire  = 1;
+            end
+        end
+    end
+
+    // --- SEQUENTIAL LOGIC (Cập nhật RS) ---
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            busy     <= 0;
+            fu_start <= 0;
+            // Reset các thanh ghi khác nếu cần (tuy nhiên busy=0 là đủ để coi như trống)
+        end else begin
+            // Mặc định tắt tín hiệu start cho FU
+            fu_start <= 0;
+
+            // 1. DISPATCH: Nhận lệnh mới vào
+            if (dispatch_enable && found_slot) begin
+                busy[alloc_idx]    <= 1;
+                op[alloc_idx]      <= opcode;
+                dest[alloc_idx]    <= dest_reg;
+                rob_tag[alloc_idx] <= my_rob_tag;
+                
+                // Toán hạng 1
+                v1[alloc_idx] <= src1_val;
+                q1[alloc_idx] <= src1_tag;
+                r1[alloc_idx] <= src1_ready;
+
+                // Toán hạng 2
+                v2[alloc_idx] <= src2_val;
+                q2[alloc_idx] <= src2_tag;
+                r2[alloc_idx] <= src2_ready;
+            end
+
+            // 2. SNOOP: Lắng nghe CDB để cập nhật dữ liệu còn thiếu
+            if (cdb_valid) begin
+                for (i = 0; i < NUM_ENTRIES; i = i + 1) begin
+                    if (busy[i]) begin
+                        // Kiểm tra nguồn 1
+                        if (!r1[i] && q1[i] == cdb_tag) begin
+                            v1[i] <= cdb_value;
+                            r1[i] <= 1; // Đánh dấu đã có hàng
+                        end
+                        // Kiểm tra nguồn 2
+                        if (!r2[i] && q2[i] == cdb_tag) begin
+                            v2[i] <= cdb_value;
+                            r2[i] <= 1;
+                        end
+                    end
+                end
+            end
+
+            // 3. EXECUTE: Đẩy lệnh sang FU
+            if (can_fire && fu_ready) begin
+                // Đẩy dữ liệu ra
+                fu_start    <= 1;
+                fu_op1      <= v1[issue_idx];
+                fu_op2      <= v2[issue_idx];
+                fu_opcode   <= op[issue_idx];
+                fu_dest_tag <= rob_tag[issue_idx];
+                fu_dest_reg <= dest[issue_idx];
+
+                // Xóa lệnh khỏi RS (vì đã gửi đi rồi)
+                busy[issue_idx] <= 0; 
+            end
+        end
+    end
+
+endmodule

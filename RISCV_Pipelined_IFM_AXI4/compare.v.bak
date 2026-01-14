@@ -1,0 +1,50 @@
+module compare (
+    input  [31:0] a_operand, 
+    input  [31:0] b_operand,
+    input  [1:0]  mode,   // 00: greater-than, 01: less-than, 10: equal
+    output reg    result
+);
+
+wire signA = a_operand[31];
+wire signB = b_operand[31];
+wire [7:0] expA = a_operand[30:23];
+wire [7:0] expB = b_operand[30:23];
+wire [22:0] fracA = a_operand[22:0];
+wire [22:0] fracB = b_operand[22:0];
+
+always @(*) begin
+    result = 1'b0; // default
+
+    case(mode)
+        2'b10: begin // Equal
+            if ((a_operand == b_operand) || // identical bits
+                // +0.0 == -0.0 case:
+                ((a_operand[30:0] == 31'd0) && (b_operand[30:0] == 31'd0)))
+                result = 1'b1;
+        end
+
+        2'b00: begin // A > B ?
+            if (signA != signB)
+                result = (~signA); // positive > negative
+            else begin
+                if (expA != expB)
+                    result = (signA) ? (expA < expB) : (expA > expB);
+                else if (fracA != fracB)
+                    result = (signA) ? (fracA < fracB) : (fracA > fracB);
+            end
+        end
+
+        2'b01: begin // A < B ?
+            if (signA != signB)
+                result = (signA); // negative < positive
+            else begin
+                if (expA != expB)
+                    result = (signA) ? (expA > expB) : (expA < expB);
+                else if (fracA != fracB)
+                    result = (signA) ? (fracA > fracB) : (fracA < fracB);
+            end
+        end
+    endcase
+end
+
+endmodule
