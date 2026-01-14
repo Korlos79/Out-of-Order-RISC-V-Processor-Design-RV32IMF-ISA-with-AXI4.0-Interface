@@ -1,0 +1,106 @@
+module axi4_ram_model #( parameter LATENCY=20, parameter INIT_FILE="" ) (
+    input clk, rst_n,
+    input [31:0] s_axi_araddr, 
+	 input s_axi_arvalid, 
+	 output reg s_axi_arready,
+    output reg [31:0] s_axi_rdata, 
+	 output reg s_axi_rvalid, 
+	 input s_axi_rready,
+    input [31:0] s_axi_awaddr, 
+	 input s_axi_awvalid, 
+	 output reg s_axi_awready,
+    input [31:0] s_axi_wdata, 
+	 input [3:0] s_axi_wstrb, 
+	 input s_axi_wvalid, 
+	 output reg s_axi_wready,
+    output reg s_axi_bvalid, 
+	 input s_axi_bready
+);
+    reg [31:0] mem [0:16383];
+	 
+    initial begin 
+	 integer i; 
+	 for(i=0;i<16384;i=i+1) 
+		mem[i]=0; if(INIT_FILE!="") 
+		$readmemb(INIT_FILE, mem); 
+	 end
+
+    // Read Logic
+    reg [7:0] r_cnt; 
+	 reg [1:0] r_state; 
+	 reg [31:0] r_addr;
+	 
+    always @(posedge clk or negedge rst_n) 
+			if(!rst_n) begin 
+				s_axi_arready<=0; 
+				s_axi_rvalid<=0; 
+				r_state<=0; 
+			end else case(r_state)
+					0: if(s_axi_arvalid) 
+					begin s_axi_arready<=1; 
+							r_addr<=s_axi_araddr; 
+							r_state<=1; 
+							r_cnt<=0; 
+					end
+					1: begin 
+					s_axi_arready<=0; 
+					if(r_cnt==LATENCY) begin 
+						s_axi_rvalid<=1; 
+						s_axi_rdata<=mem[r_addr[15:2]]; 
+						r_state<=2; 
+					end else 
+						r_cnt<=r_cnt+1; 
+					end
+					2: if(s_axi_rready) begin 
+						s_axi_rvalid<=0; 
+						r_state<=0; 
+					end
+    endcase
+
+    // Write Logic
+    reg [7:0] w_cnt; 
+	 reg [1:0] w_state; 
+	 reg [31:0] w_addr;
+    always @(posedge clk or negedge rst_n) 
+		if(!rst_n) begin 
+			s_axi_awready<=0; 
+			s_axi_wready<=0; 
+			s_axi_bvalid<=0; 
+			w_state<=0; 
+		end else 
+			case(w_state)
+				0: 	if(s_axi_awvalid) 
+					begin 
+						s_axi_awready<=1; 
+						w_addr<=s_axi_awaddr; 
+						w_state<=1; 
+					end
+				1: begin 
+					s_axi_awready<=0; 
+					if(s_axi_wvalid) begin 
+						s_axi_wready<=1; 
+						if(s_axi_wstrb[0]) 
+							mem[w_addr[15:2]][7:0]<=s_axi_wdata[7:0]; 
+						if(s_axi_wstrb[1]) 
+							mem[w_addr[15:2]][15:8]<=s_axi_wdata[15:8]; 
+						if(s_axi_wstrb[2]) 
+							mem[w_addr[15:2]][23:16]<=s_axi_wdata[23:16]; 
+						if(s_axi_wstrb[3]) 
+							mem[w_addr[15:2]][31:24]<=s_axi_wdata[31:24]; 
+						w_cnt<=0; 
+						w_state<=2; 
+					end end
+				2: begin 
+					s_axi_wready<=0; 
+					if(w_cnt==LATENCY) begin 
+						s_axi_bvalid<=1; 
+						w_state<=3; 
+					end else 
+						w_cnt<=w_cnt+1; 
+					end
+				3: if(s_axi_bready) begin 
+						s_axi_bvalid<=0; 
+						w_state<=0; 
+					end
+    endcase
+endmodule

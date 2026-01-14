@@ -1,0 +1,55 @@
+`timescale 1ns/1ps
+
+module tb_Division();
+
+    reg [31:0] a_operand, b_operand;
+    wire Exception;
+    wire [31:0] result;
+
+    // Gọi module cần test
+    Division uut (
+        .a_operand(a_operand),
+        .b_operand(b_operand),
+        .Exception(Exception),
+        .result(result)
+    );
+
+    initial begin
+        $display("TIME | A | B | RESULT | Exception");
+        $monitor("%0dns | %h | %h | %h | %b",
+                  $time, a_operand, b_operand, result, Exception);
+
+        // ----------- TEST 1: 10.0 / 2.0 = 5.0 -----------
+        // 10.0 = 0x41200000 | 2.0 = 0x40000000 | Expected = 0x40A00000
+        a_operand = 32'h41200000;
+        b_operand = 32'h40000000;
+        #20;
+
+        // ----------- TEST 2: -15.0 / 3.0 = -5.0 -----------
+        // -15.0 = 0xC1700000 | 3.0 = 0x40400000 | Expected ≈ 0xC0A00000
+        a_operand = 32'hC1700000;
+        b_operand = 32'h40400000;
+        #20;
+
+        // ----------- TEST 3: 1.0 / 0.0 (Exception) -----------
+        // 1.0 = 0x3F800000 | 0.0 = 0x00000000 (Div by zero)
+        a_operand = 32'h3F800000;
+        b_operand = 32'h00000000;
+        #20;
+
+        // ----------- TEST 4: 0.0 / 10.0 = 0.0 -----------
+        a_operand = 32'h00000000;
+        b_operand = 32'h41200000;
+        #20;
+
+        // ----------- TEST 5: INF / 2.0 (Exception) -----------
+        // INF = 0x7F800000
+        a_operand = 32'h7F800000;
+        b_operand = 32'h40000000;
+        #20;
+
+        // -------- END SIMULATION --------
+        $finish;
+    end
+
+endmodule

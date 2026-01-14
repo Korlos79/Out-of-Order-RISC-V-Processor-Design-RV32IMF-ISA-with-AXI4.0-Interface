@@ -1,0 +1,56 @@
+module Sqrt(
+    input  [31:0] a_operand,       // IEEE-754 single precision input
+    output [31:0] result,          // IEEE-754 output sqrt(a)
+    output Exception
+);
+
+wire sign;
+wire [7:0] exponent_in, exponent_adj;
+wire [22:0] mantissa_in;
+wire [31:0] normalized_input;
+wire [31:0] X0, Iter1, Iter2, Iter3, sqrt_mantissa;
+
+// Check exception for negative numbers or NaN/Inf cases
+assign sign = a_operand[31];
+assign Exception = sign | (&a_operand[30:23]);  // Negative or exponent = 255 => invalid
+assign exponent_in = a_operand[30:23];
+assign mantissa_in = a_operand[22:0];
+
+// Normalize exponent: Make exponent even before division by 2
+assign exponent_adj = (exponent_in[0] == 1) ? ((exponent_in - 8'd1) >> 1) + 8'd127 
+                                            : (exponent_in >> 1) + 8'd127;
+
+// If exponent was odd => multiply mantissa by 2 to compensate
+assign normalized_input = (exponent_in[0] == 1) ? {1'b0, 8'd127, mantissa_in} << 1 
+                                                : {1'b0, 8'd127, mantissa_in};
+
+// --- Newton-Raphson Iteration: X_{n+1} = 0.5 * (X_n + S / X_n) ---
+
+// Initial approximation for 1/sqrt(x) (Fast InvSqrt, constant 0x5f3759df style)
+wire [31:0] magic = 32'h5f3759df;
+assign X0 = magic - (a_operand >> 1);  // Fast initial guess
+
+// Iterations: Reuse your existing modules for MUL and ADD
+wire [31:0] mul1, add1;
+wire [31:0] mul2, add2;
+wire [31:0] mul3;
+
+// Iter1 = 0.5 * X0 * (3 - a*X0*X0)
+Multiplication M1(X0, X0, , , , mul1);
+Multiplication M2(a_operand, mul1, , , , mul2);
+Addition_Subtraction A1(32'h3F800000, mul2, 1'b1, , add1);
+Multiplication M3(X0, add1, , , , Iter1);
+
+// Second iteration (improves precision)
+Multiplication M4(Iter1, Iter1, , , , mul1);
+Multiplication M5(a_operand, mul1, , , , mul2);
+Addition_Subtraction A2(32'h3F800000, mul2, 1'b1, , add2);
+Multiplication M6(Iter1, add2, , , , Iter2);
+
+// Final sqrt(x) = x * (1/sqrt(x)) = a_operand * Iter2
+Multiplication M7(a_operand, Iter2, , , , sqrt_mantissa);
+
+// Assemble final IEEE754 format
+assign result = Exception ? 32'hFFFFFFFF : {1'b0, exponent_adj, sqrt_mantissa[22:0]};
+
+endmodule

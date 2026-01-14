@@ -1,0 +1,26 @@
+module ConvertUnstoInt(
+    input  [31:0] float_in,
+    output reg [31:0] int_out
+);
+    wire sign = float_in[31];
+    wire [7:0] exponent = float_in[30:23];
+    wire [22:0] fraction = float_in[22:0];
+    reg [31:0] value;
+    integer E;
+
+    always @(*) begin
+        if (sign) begin
+            int_out = 32'd0; // Âm -> ép về 0
+        end else if (exponent < 127) begin
+            int_out = 32'd0;
+        end else if (exponent > 159) begin // > 2^32
+            int_out = 32'hFFFFFFFF;
+        end else begin
+            E = exponent - 127;
+            value = {1'b1, fraction} << 8;
+            if (E >= 23) value = value << (E - 23);
+            else value = value >> (23 - E);
+            int_out = value;
+        end
+    end
+endmodule
